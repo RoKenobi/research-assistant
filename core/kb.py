@@ -78,7 +78,8 @@ class KnowledgeBase:
         return full_name in self.index["repos"]
 
     def digest(self) -> list[dict]:
-        return [entry["digest"] for entry in self.index["papers"].values()]
+        # Snapshot: reader threads call this while the main thread adds papers.
+        return [entry["digest"] for entry in list(self.index["papers"].values())]
 
     def repos_digest(self) -> list[dict]:
         keys = ("full_name", "description", "stars", "linked_papers", "why_relevant")

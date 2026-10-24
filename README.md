@@ -1,128 +1,81 @@
-# Deep Signal — Multi-Agent Research Pipeline
+# Embodied AI Research Assistant
 
 ![Python](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)
-![Claude](https://img.shields.io/badge/LLM-Claude%20Opus%205.5-D97757)
+![Claude](https://img.shields.io/badge/LLM-Claude%20via%20claude%20--p-D97757)
 ![Langfuse](https://img.shields.io/badge/observability-Langfuse-0A0A0A)
-![Tests](https://img.shields.io/badge/tests-18%20passing-2ea44f)
+![Tests](https://img.shields.io/badge/tests-65%20passing-2ea44f)
 
-**Every morning at 8 AM, three agents find what AI builders are actually talking about, pull the real research papers behind the buzz (down to the raw LaTeX math), and write a plain-English intelligence brief straight into your Obsidian vault. Every step, every token, and every cent is traced in Langfuse.**
+**Give it an embodied-AI topic, such as humanoid whole-body control. Five agents find the papers and the code, break every paper down, keep a growing knowledge base and gap map in your Obsidian vault, and propose several research ideas, each checked for whether it has already been done.**
 
-Most AI news tools summarize blog posts about papers. Deep Signal goes the other way: it starts from community engagement (Reddit, Hacker News, GitHub, X, YouTube), links the hype to its source on arXiv, and reads the paper itself.
+It is built for one job: finding what to work on next. Summaries alone don't get you there, so every paper note separates the limitations the authors admit from the ones they don't. The gap map shows which approach × capability combinations nobody has covered, and a critic checks each idea against the literature before you see it.
 
----
+> The earlier daily "community buzz → brief" pipeline lives on `master`.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph S1["① Signal Agent"]
-        A[last30days skill<br/>Reddit · HN · GitHub · X · YouTube<br/>ranked by real engagement]
-    end
-    subgraph S2["② Substance Agent"]
-        B[Claude · low effort<br/>extract paper / model names] --> C[arXiv search<br/>exact title → all fields<br/>scoped to cat:cs.*]
-        C --> D[LaTeX source ingest<br/>tar · gzip · PDF fallback]
-    end
-    subgraph S3["③ Synthesizer"]
-        E[Claude · high effort<br/>adaptive thinking<br/>structured brief]
-    end
-    A -- community signal --> B
-    D -- paper bodies + math --> E
-    A -- community signal --> E
-    E --> F[(Obsidian vault<br/>Deep Signal/topic/YYYY-MM-DD.md)]
-    S1 -.-> L{{Langfuse trace}}
-    S2 -.-> L
-    S3 -.-> L
+    I[/Your inbox<br/>PDFs · links.txt/] --> R
+    A[arXiv Scout<br/>+ Semantic Scholar] --> R[Reader<br/>9-point breakdown]
+    G[GitHub Scout<br/>repos · code] --> KB
+    R --> KB[(Knowledge base<br/>papers · repos<br/>gap map · index)]
+    KB --> ID[Ideas<br/>5–8 ranked]
+    ID --> C{Critic<br/>done before?}
+    C -- novelty unclear:<br/>targeted searches --> A
+    C -- novelty unclear --> G
+    C --> OUT[Ideas report]
 ```
 
-| Stage | Input | Output | Smart part |
-|---|---|---|---|
-| **① Signal** | a topic, e.g. `"Physical AI"` | what the community is discussing this month | ranked by upvotes, stars and engagement, not by SEO |
-| **② Substance** | the signal | up to 3 papers with their **full LaTeX bodies** | links casual mentions ("RT-2 is wild") to the exact arXiv paper |
-| **③ Synthesizer** | signal + papers | a Markdown brief with frontmatter | explains every formula in one plain sentence |
+| Agent | Model (default) | Job |
+|---|---|---|
+| arXiv Scout | Sonnet, low effort | Writes 4–6 searches, adds papers that cite or are cited by the top hits (Semantic Scholar), skips papers already read, ranks the rest |
+| GitHub Scout | Sonnet, low effort | Finds implementations, controllers, simulators and benchmarks; links repos to papers by arXiv id in their READMEs |
+| Reader | Opus, high effort | Reads the LaTeX source (PDF, then abstract as fallbacks) and writes the 9-point breakdown plus gap-map tags |
+| Ideas | Opus, high effort | Reads a compact digest of every paper in the topic, the gap map and the repos; proposes ranked improvements tied to gaps |
+| Critic | Opus, high effort | Marks each idea novel / partly done / done / unclear with cited papers, judges feasibility for your lab, and asks for targeted searches when unsure |
 
----
+The loop is bounded: at most `max_critic_rounds` (2) critic rounds and `followup_papers` (5) extra papers per run.
 
-## Under the Hood
+### One run
 
-### 1. Entity linking: from a Reddit thread to the exact paper
+1. Papers you dropped in the topic's `inbox/` are always read and don't count toward the cap.
+2. Both scouts search. Anything already in the knowledge base is skipped, so nothing is read or paid for twice.
+3. The Reader breaks down each new paper, two at a time, and every finished paper is saved immediately.
+4. Repos are saved and the gap map is rebuilt from every paper in the topic, past runs included.
+5. Ideas proposes improvements; the Critic reviews them, possibly after one round of targeted searches.
+6. The ideas report is written.
 
-People don't cite papers; they say *"RT-2"* or *"that new VLA model"*. Agent 2 closes that gap:
+If your Claude plan's usage limit hits mid-run, the run stops with exit code 2 and keeps everything read so far. Run the same command later and it carries on.
 
-1. **Extraction:** Claude runs at **low effort** (cheap and fast) and returns a JSON array of paper and model names.
-2. **Hardened parsing:** a `json.JSONDecoder.raw_decode` scanner pulls the first valid array out of free-form text. Brackets *inside* names (`"RT-2 [v2]"`) don't break it, and results are de-duplicated and capped.
-3. **Two-pass arXiv resolution:** first an exact title phrase match (`ti:"…"`, top hit only, since a named paper is one paper), then an all-fields fallback.
-4. **Domain disambiguation:** every query is ANDed with `cat:cs.*`. Without it, *"RT-2"* resolves to a **2010 astrophysics instrument paper**; with it, to *RT-2: Vision-Language-Action Models* (2307.15818). This was verified against the live arXiv API.
-
-If nothing can be linked, the agent falls back to searching the topic itself, so a brief is never empty for lack of names.
-
-### 2. LaTeX ingestion: feeding the model the math, not the boilerplate
-
-PDFs flatten equations into garbage, so Deep Signal downloads the paper's **original LaTeX source**. Making that work took real engineering:
-
-- **Format sniffing:** arXiv serves a gzipped tarball, a gzipped single `.tex`, or just a PDF. All three are detected, and anything unusable falls back to PyMuPDF text extraction.
-- **Root-document detection:** the main file is the one declaring `\documentclass`, not simply the largest file (big appendices used to win).
-- **Recursive `\input` / `\include` inlining:** many papers keep each section in its own file, so the main `.tex` alone is just front matter. Includes are resolved from the archive (depth-limited to 5). Commented-out includes are ignored because comments are stripped *first*.
-- **Token-budget hygiene:** the preamble (`\usepackage…`), comments (while keeping escaped `\%`) and bibliography are removed, so the 20K-character budget per paper goes on content.
-
-**Measured on *Attention Is All You Need*:** the old pipeline sent the model **3K characters of license boilerplate**. Now it sends **20K characters of the actual paper, equations included.**
-
-### 3. Claude integration, built for current models
-
-- **Adaptive thinking aware:** current Claude models put *thinking blocks* before the answer. The pipeline joins only the `text` blocks; the naive `response.content[0].text` crashes on these models.
-- **Effort routing:** `low` for the cheap extraction step and `high` for the brief, so you pay for reasoning only where it matters.
-- **Server-side refusal fallbacks:** if a safety classifier wrongly declines a request, the API re-runs it on a fallback model *inside the same call* instead of losing the topic.
-- **Stop-reason handling:** a `refusal` raises a typed error, and `max_tokens` truncation is logged and flagged in the trace.
-- Swap models with one env var (`ANTHROPIC_MODEL`).
-
-### 4. Observability with Langfuse: see every step, token and cent
-
-Every run becomes a **Langfuse trace**, built on OpenTelemetry. One trace per topic:
+### What lands in your vault
 
 ```
-deep_signal | Physical AI                      ← trace: note path, papers found
-├── signal_agent                               ← span: signal preview, or the failure reason
-├── arxiv_agent                                ← span: entities extracted, papers found
-│   └── extract_entities      🤖 generation    ← model · prompt · reply · tokens · $ cost
-└── synthesizer                                ← span: paper count, signal length
-    └── write_brief           🤖 generation    ← model · prompt · brief · tokens · $ cost
+Research/
+└── humanoid-whole-body-control/        one folder per topic
+    ├── papers/2307.15818.md            9-point breakdown
+    ├── repos/owner__repo.md            code, stars, linked papers, why it matters
+    ├── gap-map.md                      approach × capability; "—" cells are gaps
+    ├── ideas/2026-10-24.md             ranked ideas with novelty verdicts
+    ├── inbox/                          drop PDFs or links.txt here
+    │   └── processed/
+    └── index.json                      what's been read, for dedupe and resume
 ```
 
-What makes it more than "logging with a UI":
+Every paper note has the same sections: **Problem, Approach, Setup** (robot, simulator, sim or real, training cost), **Results, Limitations** (stated and unstated), **Future work, Code & data, Key references, Relevance** (with a 0–3 lab-fit score).
 
-- **LLM calls are first-class *generations*,** not log lines. Each records the model, full prompt (system and user), full reply, `effort` / `max_tokens` settings, input/output token counts and **USD cost**.
-- **Cost is computed client-side** from Anthropic list prices and attached to every generation. The dashboard shows cost per call, per topic and per day, even for models too new for Langfuse's own price table.
-- **The model that actually answered is recorded.** If a refusal fallback kicks in, the generation shows the fallback model, not the requested one.
-- **Problems are color-coded:** API errors are `ERROR`, while refusals and truncation are `WARNING`. You can filter straight to bad runs.
-- **Zero overhead when off:** no keys means no tracing, no noise and no crashes. Decorators run at import time, before `.env` is loaded, so `core/tracing.py` decides traced-vs-plain *per call* instead of at decoration time.
-- **Debuggable by design:** when a brief looks wrong, the trace shows whether the signal was empty, whether entity linking missed, or what exact prompt the synthesizer saw.
+## Under the hood
 
-This was verified by running the full pipeline with the real Langfuse client and an in-memory OpenTelemetry exporter. That confirmed the trace name, the generation types, the parent/child nesting, and the cost math (20K in + 3K out on Opus 5.5 = $0.14).
+**Claude on your plan, not an API key.** Every LLM call is a `claude -p --output-format json` subprocess, so it uses your Claude Code login and plan limits. Two flags matter. `--safe-mode` (with `--strict-mcp-config` and `--disable-slash-commands`) skips your plugins, hooks, skills and CLAUDE.md, which otherwise add about 68K input tokens to every call; with it, overhead is about 600. `--bare` would also skip them but breaks the login, so it's never used. Prompts go in on stdin because Windows caps command lines at about 32K characters.
 
-### 5. Production-grade reliability for a cron job
+**LaTeX first.** The Reader gets the paper's LaTeX source from arXiv with the preamble, comments and bibliography stripped and `\input` files inlined, so the budget goes to the method and the maths. PDF text and then the abstract are fallbacks, and the note says which one was used.
 
-| Failure mode | Behavior |
-|---|---|
-| One topic crashes | Logged with a traceback; **the other topics still run** |
-| Any topic failed | Process exits with **code 1**, so Task Scheduler's *Last Run Result* shows it |
-| Windows log redirection (cp1252) | stdout is forced to UTF-8, so Unicode output can't crash the run |
-| Vault path typo / OneDrive not mounted | **Fails fast** before spending API calls, never creates a phantom vault |
-| Missing API key | Clear error at startup |
-| Signal skill missing or timed out | Agent 2 falls back to topic search; reason recorded in the trace |
-| Repo moved | Scheduler scripts resolve paths relative to themselves and prefer `.venv` |
+**Citations, not just keywords.** [Semantic Scholar](https://www.semanticscholar.org/) knows which papers cite which. The arXiv Scout pulls the references and citations of its top hits, which catches related work that uses different words for the same idea.
 
----
+**A gap map that lines up.** The Reader is shown the tags already in the knowledge base and asked to reuse them, so `push recovery` doesn't also appear as `disturbance rejection` and split a column.
 
-## The Brief
+**Your lab in every prompt.** `config.yaml` names your robots (Unitree G1, AgiBot X2) and simulator (MuJoCo by default). Matching work ranks a little higher and feasibility notes say how well an idea ports, but work on other simulators is never treated as irrelevant.
 
-Each note lands at `Deep Signal/<topic>/YYYY-MM-DD.md`, with YAML frontmatter (date, topic, tags) for Obsidian search and Dataview:
-
-- **TL;DR:** 2–3 sentences, readable in 10 seconds
-- **What the Community is Saying:** why developers care, with an Obsidian callout
-- **The Papers:** each paper in plain English, why it matters, and the key idea, with `[[wikilinks]]`
-- **Key Formulas:** the LaTeX equations, each with a one-sentence plain-English explanation
-- **What to Watch Next:** specific projects, researchers and deadlines for the next two weeks
-
----
+**Observability.** Each run is one Langfuse trace, `research | <topic>`, with a span per agent and every Claude call recorded as a generation with model, prompt, reply and tokens. The dollar figure is the CLI's API-equivalent estimate and is labelled as such; you're billed through your plan.
 
 ## Quickstart
 
@@ -134,50 +87,23 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 2. Clone the signal skill
+You also need [Claude Code](https://claude.com/claude-code), logged in. Check with `claude -p "hi"`.
+
+### 2. Configure
 
 ```bash
-cd skills
-git clone https://github.com/mvanhorn/last30days-skill last30days
-cd last30days && uv sync && cd ../..
+cp .env.example .env            # Langfuse keys and optional GITHUB_TOKEN
 ```
 
-> Requires Python 3.12+ and [uv](https://github.com/astral-sh/uv).
+Set `vault_path` in `config.yaml` to your Obsidian vault, and check the `lab` section.
 
-### 3. Add keys
+### 3. Run
 
 ```bash
-cp .env.example .env
+python pipeline.py "humanoid whole-body control"
 ```
 
-| Variable | Required | Where to get it |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | ✅ | [console.anthropic.com](https://console.anthropic.com). API billing is separate from a Claude.ai subscription |
-| `ANTHROPIC_MODEL` | — | defaults to `claude-opus-5-5`; `claude-sonnet-5-5` costs about half |
-| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | — | your [self-hosted Langfuse](#self-hosting-langfuse) (generated by `gen-env.sh`), or free at [cloud.langfuse.com](https://cloud.langfuse.com) → Settings → API Keys |
-| `LANGFUSE_HOST` | — | `http://<server-ip>:3000` when self-hosted; `https://cloud.langfuse.com` for Langfuse Cloud |
-| `XAI_API_KEY`, `GOOGLE_API_KEY`, `BRAVE_API_KEY` | — | unlock X, YouTube and web search in the signal stage |
-
-### 4. Point it at your vault
-
-```yaml
-# config.yaml
-vault_path: "C:/path/to/your/Obsidian/vault"
-scheduled_topics:
-  - "Physical AI"
-  - "Embodied AI robotics"
-  - "Vision Language Action models"
-```
-
-### 5. Run
-
-```bash
-python pipeline.py "Physical AI"          # on demand, any topic
-python pipeline.py                        # all scheduled_topics
-scheduler\register.bat                    # daily at 8 AM (Windows, run as admin)
-```
-
-Logs go to `logs/pipeline.log`. Check the task with `schtasks /query /tn "DeepSignalPipeline"`.
+Run it again on the same topic to grow that knowledge base; run it on another topic to start a new one.
 
 ### Self-hosting Langfuse
 
@@ -194,48 +120,47 @@ docker compose up -d
 
 Open `http://<server-ip>:3000` and log in with the email you gave and the password in `.env` (`LANGFUSE_INIT_USER_PASSWORD`). Then change the password in the dashboard. Copy `LANGFUSE_INIT_PROJECT_PUBLIC_KEY` and `LANGFUSE_INIT_PROJECT_SECRET_KEY` into this project's `.env` as `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`, and set `LANGFUSE_HOST=http://<server-ip>:3000`.
 
-The dashboard is plain HTTP, so keep it on your LAN or Tailscale and don't forward port 3000. To upgrade, re-download `docker-compose.yml` and run `docker compose pull && docker compose up -d`.
-
----
+The dashboard is plain HTTP, so keep it on your LAN or Tailscale and don't forward port 3000. To upgrade, re-download `docker-compose.yml` and run `docker compose pull && docker compose up -d`. Tracing is optional: if the server is down, runs carry on untraced.
 
 ## Configuration
 
 | Key | Default | What it does |
 |---|---|---|
-| `max_papers` | `3` | Papers fetched per topic |
-| `arxiv_category_filter` | `cat:cs.*` | Scopes paper search to computer science; `""` disables it |
-| `paper_char_budget` | `20000` | Characters of each paper body sent to the synthesizer |
-| `signal_char_budget` | `12000` | Characters of community signal sent to the synthesizer |
-| `signal_timeout_sec` | `90` | Timeout for the signal stage |
+| `vault_path` | — | Your Obsidian vault (must exist) |
+| `research_folder` | `Research` | Folder in the vault that holds topic folders |
+| `lab.robots` / `lab.simulators` | `Unitree G1`, `AgiBot X2` / `MuJoCo` | Used for relevance ranking and feasibility |
+| `models.fast` / `models.deep` | `claude-sonnet-5-5` / `claude-opus-5-5` | Scouts / Reader, Ideas, Critic |
+| `effort.fast` / `effort.deep` | `low` / `high` | Effort per tier |
+| `arxiv_category_filter` | `(cat:cs.RO OR cat:cs.LG OR cat:cs.AI OR cat:cs.CV)` | ANDed onto every arXiv search; `""` searches everything |
+| `arxiv_results_per_query` | `8` | Hits per search query |
+| `max_new_papers` | `15` | New papers per run, follow-ups included (inbox papers are extra) |
+| `followup_papers` | `5` | Reserved for the Critic's targeted searches |
+| `max_critic_rounds` | `2` | Critic reviews per run |
+| `max_repos` | `10` | Repos kept per scout pass |
+| `paper_char_budget` | `40000` | Characters of each paper body sent to the Reader |
+| `llm_concurrency` | `2` | Papers read at the same time |
+| `llm_timeout_sec` | `600` | Per-call timeout |
 
-## Cost
+`.env`: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` (all optional), and `GITHUB_TOKEN` (optional; raises GitHub search from 10 to 30 requests a minute).
 
-These are estimates; Langfuse shows your real numbers after the first run. A topic sends about 20K input tokens and gets a few thousand output tokens back.
-
-| Model | Per topic | 3 topics/day, per month |
-|---|---|---|
-| `claude-opus-5-5` (default) | ~$0.15–0.25 | ~$15–20 |
-| `claude-sonnet-5-5` | ~$0.08–0.12 | ~$7–10 |
-
-Set a monthly spend limit in the Anthropic Console for peace of mind.
-
----
-
-## Project Structure
+## Project structure
 
 ```
-pipeline.py            orchestrator: per-topic isolation, exit codes, trace naming
+pipeline.py              CLI, graph, critic loop, caps, usage-limit stop
 agents/
-  signal_agent.py      ① runs last30days in its own venv, with a timeout
-  arxiv_agent.py       ② entity linking, arXiv resolution, LaTeX ingestion
-  synthesizer.py       ③ prompt assembly and brief generation
+  scout_arxiv.py         queries, citation neighbours, dedupe, ranking
+  scout_github.py        repo search, paper linking, filtering
+  reader.py              paper -> 9-point breakdown + tags
+  ideas.py               knowledge base -> ranked ideas
+  critic.py              novelty and feasibility verdicts, follow-up queries
 core/
-  llm.py               Claude client, effort, fallbacks, stop reasons, cost
-  tracing.py           Langfuse spans + generations, no-op when disabled
-  obsidian.py          slugging, frontmatter, note writing
-  config.py            .env + config.yaml loading, vault guard
-scheduler/             Windows Task Scheduler scripts (path-independent)
-tests/                 18 offline tests, no network or API spend
+  llm.py                 claude -p wrapper, usage-limit detection, Langfuse generations
+  kb.py                  topic folders, notes, gap map, ideas report, inbox, index
+  jsonparse.py           JSON out of model replies
+  config.py, tracing.py
+sources/                 arXiv (+ LaTeX/PDF), GitHub, Semantic Scholar
+deploy/langfuse/         self-hosting files
+tests/                   65 tests, no network, no plan usage
 ```
 
 ## Tests
@@ -245,15 +170,15 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The 18 tests cover LaTeX extraction (tarballs, single files, `\input` inlining, PDFs), entity parsing edge cases, thinking-block handling, refusals, per-model request parameters, cost math, Langfuse generation recording, note writing and failure isolation. They make no network calls and spend nothing on the API.
+The tests replace `claude -p`, every HTTP call and every agent with fakes, so they make no network calls and spend nothing.
 
 ## Stack
 
-| Layer | Tool |
+| Layer | Choice |
 |---|---|
-| Signal discovery | [mvanhorn/last30days-skill](https://github.com/mvanhorn/last30days-skill) |
-| Papers | arXiv API + LaTeX source, PyMuPDF fallback |
-| LLM | Claude (Anthropic API), adaptive thinking + effort control |
-| Observability | [Langfuse](https://langfuse.com) v4 (OpenTelemetry) |
+| Orchestration | Plain Python, one bounded loop |
+| LLM | Claude via Claude Code CLI (`claude -p`) on a Claude plan |
+| Papers | arXiv API + LaTeX source, PyMuPDF fallback, Semantic Scholar citations |
+| Code | GitHub REST search |
+| Observability | [Langfuse](https://langfuse.com) v4, self-hosted |
 | Output | Obsidian vault (Markdown + YAML frontmatter) |
-| Scheduling | Windows Task Scheduler |

@@ -11,6 +11,8 @@ from sources import arxiv_source
 logger = logging.getLogger(__name__)
 
 ATTEMPTS = 2
+# More tags than this per paper turns the gap map into a wall of near-duplicate columns.
+TAG_LIMITS = {"approaches": 4, "capabilities": 5}
 
 SYSTEM = """\
 You are a PhD-level reviewer in embodied AI and robotics, reading a paper for a researcher \
@@ -27,8 +29,8 @@ one JSON object only, with exactly these keys:
   "code_and_data": ["released code, models or datasets, with links"],
   "key_references": [{"title": "", "arxiv_id": "2101.00001 or null"}],
   "relevance": "how this connects to improving methods in the topic, and one idea it sparks",
-  "approaches": ["short lowercase method tags"],
-  "capabilities": ["short lowercase capability tags, e.g. stairs, push recovery, uneven terrain, loco-manipulation"],
+  "approaches": ["2-4 short lowercase method tags, most important first"],
+  "capabilities": ["2-5 short lowercase capability tags, most important first, e.g. stairs, push recovery, uneven terrain, loco-manipulation"],
   "lab_fit": 0
 }
 
@@ -95,8 +97,9 @@ def normalize(raw: dict) -> dict:
     bd["setup"] = {k: str(setup.get(k) or "") for k in _SETUP_KEYS}
     lim = raw.get("limitations") if isinstance(raw.get("limitations"), dict) else {}
     bd["limitations"] = {k: [str(x) for x in lim.get(k) or [] if x] for k in ("stated", "unstated")}
-    for key in ("approaches", "capabilities"):
-        bd[key] = list(dict.fromkeys(t.strip().lower() for t in bd[key] if isinstance(t, str) and t.strip()))
+    for key, limit in TAG_LIMITS.items():
+        tags = dict.fromkeys(t.strip().lower() for t in bd[key] if isinstance(t, str) and t.strip())
+        bd[key] = list(tags)[:limit]
     bd["key_references"] = [
         {"title": str(r.get("title") or ""), "arxiv_id": r.get("arxiv_id") or None}
         for r in bd["key_references"] if isinstance(r, dict)

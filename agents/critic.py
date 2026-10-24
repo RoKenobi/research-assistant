@@ -40,7 +40,7 @@ Reply with a JSON list, one object per idea, matched by title:
   "rank": 1{queries_field}}}
 Re-rank so rank 1 is the idea most worth pursuing: novel or partly done, feasible, high impact."""
 
-SEARCH_NOTE = ("If an idea's novelty is unclear, add up to 2 short arXiv search queries that would settle it. "
+SEARCH_NOTE = ("If an idea's novelty is unclear, add up to 2 arXiv search queries (3-5 keywords each) that would settle it. "
                "Those searches will be run and you will review again.")
 FINAL_NOTE = "This is the final review: no more searching. Give your best verdict for every idea."
 

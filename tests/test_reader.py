@@ -97,3 +97,12 @@ def test_reader_uses_existing_content(setup, monkeypatch):
     monkeypatch.setattr(reader, "complete", llm)
     reader.run(paper("local-notes", content="MY PDF TEXT", content_type="pdf_text"), "t", kb, cfg)
     assert fetched == [] and "MY PDF TEXT" in llm.calls[0]["prompt"]
+
+
+def test_reader_caps_tags(setup, monkeypatch):
+    cfg, kb, _ = setup
+    many = dict(GOOD, approaches=[f"a{i}" for i in range(9)], capabilities=[f"c{i}" for i in range(9)])
+    monkeypatch.setattr(reader, "complete", FakeLLM({"reader": json.dumps(many)}))
+    bd = reader.run(paper("2401.00001"), "t", kb, cfg)
+    assert bd["approaches"] == ["a0", "a1", "a2", "a3"]
+    assert bd["capabilities"] == ["c0", "c1", "c2", "c3", "c4"]

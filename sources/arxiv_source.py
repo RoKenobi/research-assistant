@@ -16,6 +16,7 @@ import pymupdf
 logger = logging.getLogger(__name__)
 
 USER_AGENT = "ResearchAssistant/1.0"
+MAX_TERMS = 6  # AND-ing more terms than this almost never matches anything
 _STOPWORDS = {"a", "an", "and", "or", "the", "of", "for", "in", "on", "with", "to", "via", "by", "using", "from"}
 
 
@@ -67,7 +68,7 @@ def _terms(query: str) -> str:
     query almost always returns nothing; AND-ed terms keep it specific without that.
     """
     words = [w for w in re.findall(r"[\w-]+", query.lower()) if w not in _STOPWORDS and w.strip("-")]
-    return " AND ".join(f"all:{w}" for w in words)
+    return " AND ".join(f"all:{w}" for w in words[:MAX_TERMS])
 
 
 def fetch_by_ids(ids: list[str], source: str = "arxiv") -> list[dict]:

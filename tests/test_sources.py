@@ -98,6 +98,14 @@ def test_search_terms_drop_stopwords_and_symbols(monkeypatch):
     assert queries == ["all:whole-body AND all:control AND all:humanoid AND all:robots AND all:sim-to-real"]
 
 
+def test_search_caps_terms(monkeypatch):
+    queries = []
+    monkeypatch.setattr(arxiv.Client, "results", lambda self, search: queries.append(search.query) or iter([]))
+    arxiv_source.search(["humanoid motion tracking robustness benchmark perturbation push terrain evaluation"],
+                        per_query=8, category="")
+    assert queries[0].count("all:") == 6  # ten AND-ed terms match nothing
+
+
 def test_fetch_content_falls_back_to_abstract(monkeypatch):
     monkeypatch.setattr(arxiv_source, "_fetch_latex_source", lambda arxiv_id, budget: "")
     monkeypatch.setattr(arxiv_source, "_fetch_pdf_text", lambda url, budget: "")

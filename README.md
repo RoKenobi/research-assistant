@@ -9,7 +9,7 @@
 
 It is built for one job: finding what to work on next. Summaries alone don't get you there, so every paper note separates the limitations the authors admit from the ones they don't. The gap map shows which approach × capability combinations nobody has covered, and a critic checks each idea against the literature before you see it.
 
-> The earlier daily "community buzz → brief" pipeline lives on `master`.
+> This grew out of [multi-agent-research-tool](https://github.com/RoKenobi/multi-agent-research-tool), a daily "community buzz → brief" pipeline, which stays there.
 
 ## Architecture
 

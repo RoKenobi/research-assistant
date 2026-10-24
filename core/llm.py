@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -17,6 +18,8 @@ _FIXED_FLAGS = [
     "-p", "--output-format", "json", "--tools", "", "--no-session-persistence",
     "--safe-mode", "--strict-mcp-config", "--disable-slash-commands",
 ]
+# If either is set, claude -p bills that key instead of the user's plan login.
+_STRIPPED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 _USAGE_LIMIT_RE = re.compile(r"usage limit|rate limit|limit (?:reached|will reset)", re.I)
 
 
@@ -95,8 +98,9 @@ def complete(
 
 def _run(argv: list[str], prompt: str, timeout: int) -> LLMResult:
     try:
+        env = {k: v for k, v in os.environ.items() if k not in _STRIPPED_ENV}
         proc = subprocess.run(argv, input=prompt, capture_output=True, text=True,
-                              encoding="utf-8", timeout=timeout)
+                              encoding="utf-8", timeout=timeout, env=env)
     except subprocess.TimeoutExpired as e:
         raise LLMError(f"claude -p timed out after {timeout}s") from e
 

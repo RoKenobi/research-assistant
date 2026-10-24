@@ -54,6 +54,18 @@ def test_complete_builds_cli_command(fake_cli):
     assert fake_cli[0]["input"] == "the prompt"
 
 
+def test_complete_ignores_api_key_env(fake_cli, monkeypatch):
+    # A stray ANTHROPIC_API_KEY (old .env, shell profile) would make claude -p bill
+    # that key instead of the Claude plan, or fail with "Invalid API key".
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-placeholder")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok")
+    monkeypatch.setenv("KEEP_ME", "1")
+    complete("p", model="m", system="s")
+    env = fake_cli[0]["env"]
+    assert "ANTHROPIC_API_KEY" not in env and "ANTHROPIC_AUTH_TOKEN" not in env
+    assert env["KEEP_ME"] == "1"
+
+
 def test_complete_parses_json_result(fake_cli):
     result = complete("p", model="claude-sonnet-5-5", system="s")
     assert result.text == "hi"

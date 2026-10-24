@@ -61,6 +61,13 @@ def _run(topic: str, cfg: dict, kb: KnowledgeBase) -> RunResult:
     repos_found = _add_repos(repos, kb)
     kb.write_gap_map()
 
+    if not kb.digest():
+        # Ideas with no papers behind them would be guesses presented as research.
+        note = "No papers in this topic's knowledge base yet, so no ideas were proposed. Try a broader topic."
+        logger.warning(note)
+        meta = {"papers_read": 0, "repos_found": repos_found, "critic_rounds": 0, "stopped_early": note}
+        return RunResult(kb.write_ideas([], meta), 0, repos_found, 0, note)
+
     logger.info("━━━ Ideas ━━━")
     current = ideas.run(topic, kb, cfg)
 

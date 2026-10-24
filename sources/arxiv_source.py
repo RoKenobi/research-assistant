@@ -16,6 +16,7 @@ import pymupdf
 logger = logging.getLogger(__name__)
 
 USER_AGENT = "ResearchAssistant/1.0"
+_STOPWORDS = {"a", "an", "and", "or", "the", "of", "for", "in", "on", "with", "to", "via", "by", "using", "from"}
 
 
 def _client() -> arxiv.Client:
@@ -43,8 +44,10 @@ def search(queries: list[str], *, per_query: int, category: str) -> list[dict]:
     scope = f" AND {category}" if category else ""
     papers, seen = [], set()
     for query in queries:
-        phrase = '"{}"'.format(query.replace('"', ""))
-        search_ = arxiv.Search(query=f"all:{phrase}{scope}", max_results=per_query,
+        terms = _terms(query)
+        if not terms:
+            continue
+        search_ = arxiv.Search(query=f"{terms}{scope}", max_results=per_query,
                                sort_by=arxiv.SortCriterion.Relevance)
         try:
             for result in client.results(search_):
@@ -55,6 +58,16 @@ def search(queries: list[str], *, per_query: int, category: str) -> list[dict]:
         except Exception as e:
             logger.warning("arXiv search failed for %r: %s", query, e)
     return papers
+
+
+def _terms(query: str) -> str:
+    """'whole-body control for humanoids' -> 'all:whole-body AND all:control AND all:humanoids'.
+
+    A quoted multi-word phrase only matches that exact wording, so a 5-word
+    query almost always returns nothing; AND-ed terms keep it specific without that.
+    """
+    words = [w for w in re.findall(r"[\w-]+", query.lower()) if w not in _STOPWORDS and w.strip("-")]
+    return " AND ".join(f"all:{w}" for w in words)
 
 
 def fetch_by_ids(ids: list[str], source: str = "arxiv") -> list[dict]:

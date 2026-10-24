@@ -154,3 +154,13 @@ def test_main_success_prints_summary(world, capsys):
     assert pipeline.main(["humanoid", "wbc"]) == 0
     out = capsys.readouterr().out
     assert "ideas" in out and "Papers read: 3" in out
+
+
+def test_no_papers_means_no_ideas(world):
+    rec, cfg, state = world
+    state["initial"] = []
+    result = pipeline.run("t", cfg)
+    assert _names(rec, "ideas") == [] and _names(rec, "critic") == []
+    assert result.papers_read == 0 and result.critic_rounds == 0
+    text = result.ideas_path.read_text(encoding="utf-8")
+    assert "No papers" in text

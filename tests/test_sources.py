@@ -83,11 +83,19 @@ def test_search_builds_scoped_query(monkeypatch):
     monkeypatch.setattr(arxiv.Client, "results", fake_results)
     papers = arxiv_source.search(["humanoid stairs", "push recovery"], per_query=8,
                                  category="(cat:cs.RO OR cat:cs.LG)")
-    assert queries[0] == 'all:"humanoid stairs" AND (cat:cs.RO OR cat:cs.LG)'
+    # Each word is its own term: a quoted multi-word phrase almost never matches on arXiv.
+    assert queries[0] == "all:humanoid AND all:stairs AND (cat:cs.RO OR cat:cs.LG)"
     assert [p["id"] for p in papers] == ["2401.00001"]  # same id from both queries -> one paper
     paper = papers[0]
     assert paper["source"] == "arxiv" and paper["content"] is None and paper["content_type"] is None
     assert paper["abstract"] == "An abstract. Second line."
+
+
+def test_search_terms_drop_stopwords_and_symbols(monkeypatch):
+    queries = []
+    monkeypatch.setattr(arxiv.Client, "results", lambda self, search: queries.append(search.query) or iter([]))
+    arxiv_source.search(['whole-body control for "humanoid" robots (sim-to-real)'], per_query=8, category="")
+    assert queries == ["all:whole-body AND all:control AND all:humanoid AND all:robots AND all:sim-to-real"]
 
 
 def test_fetch_content_falls_back_to_abstract(monkeypatch):

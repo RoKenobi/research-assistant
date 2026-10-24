@@ -1,20 +1,33 @@
-scheduled_topics:
-  - "Physical AI"
-  - "Embodied AI robotics"
-  - "Vision Language Action models"
-
 vault_path: "C:/Coding projects/myGithub/Vault"
+# Topic folders go under <vault>/<research_folder>/<topic-slug>/
+research_folder: "Research"
 
-max_papers: 3
-# arXiv query clause ANDed onto every paper search; "" to search all fields.
-arxiv_category_filter: "cat:cs.*"
-signal_timeout_sec: 90
+# Your lab's setup. Ranks matching work higher and shapes feasibility notes;
+# work on other robots or simulators is still read.
+lab:
+  robots: ["Unitree G1", "AgiBot X2"]
+  simulators: ["MuJoCo"]
 
-# How much text goes to the synthesizer (characters). LaTeX preamble, comments
-# and bibliography are stripped first, so this is spent on the paper body.
-paper_char_budget: 20000
-signal_char_budget: 12000
+# Run through `claude -p` on your Claude plan.
+models:
+  fast: claude-sonnet-5-5   # search queries, ranking, repo filtering
+  deep: claude-opus-5-5     # reader, ideas, critic
+effort:
+  fast: low
+  deep: high
 
-last30days_script: "skills/last30days/skills/last30days/scripts/last30days.py"
-last30days_cwd: "skills/last30days"
-last30days_emit: "compact"
+# arXiv query clause ANDed onto every search; "" searches all fields.
+arxiv_category_filter: "(cat:cs.RO OR cat:cs.LG OR cat:cs.AI OR cat:cs.CV)"
+arxiv_results_per_query: 8
+
+# Per-run caps keep one run inside your plan's usage limits.
+max_new_papers: 15      # total, including follow-ups (inbox papers are extra)
+followup_papers: 5      # reserved for the critic's targeted searches
+max_critic_rounds: 2
+max_repos: 10
+
+# Characters of each paper body sent to the reader (LaTeX preamble and
+# bibliography are stripped first).
+paper_char_budget: 40000
+llm_concurrency: 2      # papers read at the same time
+llm_timeout_sec: 600

@@ -1,111 +1,126 @@
+import json
 import logging
-import os
-
-import anthropic
+import re
+import shutil
+import subprocess
+from dataclasses import dataclass
 
 from core.tracing import generation
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-opus-5-5"
-
-# Models that accept server-side refusal fallbacks ("default" routing).
-_FALLBACK_MODELS = ("claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5")
-
-
-# (input, output) USD per million tokens — Anthropic list prices as of 2026-09.
-_PRICES_PER_MTOK = {
-    "claude-fable-5-1": (10.0, 50.0),
-    "claude-opus-5-5": (4.0, 20.0),
-    "claude-opus-5": (5.0, 25.0),
-    "claude-opus-4-8": (5.0, 25.0),
-    "claude-sonnet-5-5": (2.0, 10.0),
-    "claude-sonnet-5": (2.0, 10.0),
-    "claude-haiku-4-5": (1.0, 5.0),
-}
+# `claude -p` runs on the user's Claude plan, so there is no API key to manage.
+# --safe-mode skips the user's plugins, hooks, skills and CLAUDE.md, which
+# otherwise add ~68K input tokens to every call. Never use --bare: it skips the
+# keychain read and fails with "Not logged in".
+_FIXED_FLAGS = [
+    "-p", "--output-format", "json", "--tools", "", "--no-session-persistence",
+    "--safe-mode", "--strict-mcp-config", "--disable-slash-commands",
+]
+_USAGE_LIMIT_RE = re.compile(r"usage limit|rate limit|limit (?:reached|will reset)", re.I)
 
 
-class LLMRefusalError(RuntimeError):
+class LLMError(RuntimeError):
     pass
 
 
-def create_client() -> tuple:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise SystemExit("ANTHROPIC_API_KEY is not set — add it to .env")
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY; retries 429/5xx twice by default
-    model = os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL
-    return client, model
+class LLMUsageLimitError(LLMError):
+    """The Claude plan's usage limit was hit; the run should stop and resume later."""
+
+
+@dataclass
+class LLMResult:
+    text: str
+    model: str
+    usage: dict[str, int]
+    cost_usd: float | None
+
+
+def _executable() -> str:
+    exe = shutil.which("claude")
+    if not exe:
+        raise SystemExit(
+            "Claude Code (the `claude` command) was not found. Install it from "
+            "https://claude.com/claude-code, then run `claude` and /login."
+        )
+    return exe
+
+
+def check_cli() -> str:
+    """Fail fast, before any fetching, if Claude Code is missing or logged out."""
+    exe = _executable()
+    try:
+        complete("Reply with exactly: ok", model="claude-sonnet-5-5", system="Reply tersely.",
+                 effort="low", name="check_cli", timeout=120)
+    except LLMError as e:
+        raise SystemExit(f"Claude Code is installed but the test call failed: {e}\n"
+                         "Run `claude` and /login, then try again.") from e
+    return exe
 
 
 def complete(
-    client,
-    model: str,
     prompt: str,
     *,
-    system: str | None = None,
-    max_tokens: int = 16000,
-    effort: str | None = None,
+    model: str,
+    system: str,
+    effort: str = "low",
     name: str = "claude",
-):
-    """Send one user message and return (text, response).
+    timeout: int = 600,
+) -> LLMResult:
+    """Send one prompt through `claude -p` and return its text and usage.
 
-    Current Claude models think adaptively by default, so the response may start
-    with thinking blocks — only text blocks are joined into the returned string.
+    The prompt goes on stdin: Windows caps command lines at ~32K characters and
+    paper bodies are longer.
     """
-    kwargs = {}
-    if system:
-        kwargs["system"] = system
-    if effort and not model.startswith("claude-haiku"):
-        kwargs["output_config"] = {"effort": effort}
-    if model in _FALLBACK_MODELS:
-        # If a safety classifier declines, the API re-runs the request on a fallback model.
-        kwargs["betas"] = ["server-side-fallback-2026-07-01"]
-        kwargs["fallbacks"] = "default"
+    argv = [_executable(), *_FIXED_FLAGS, "--model", model, "--effort", effort,
+            "--system-prompt", system]
+    trace_input = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
 
-    messages = [{"role": "user", "content": prompt}]
-    trace_input = ([{"role": "system", "content": system}] if system else []) + messages
-
-    with generation(
-        name,
-        model=model,
-        input=trace_input,
-        model_parameters={"max_tokens": max_tokens, "effort": effort},
-    ) as gen:
+    with generation(name, model=model, input=trace_input, model_parameters={"effort": effort}) as gen:
         try:
-            response = client.beta.messages.create(
-                model=model, max_tokens=max_tokens, messages=messages, **kwargs,
-            )
-        except Exception as e:
+            result = _run(argv, prompt, timeout)
+        except LLMError as e:
             gen.update(level="ERROR", status_message=str(e))
             raise
-
-        text = "".join(block.text for block in response.content if block.type == "text")
-        usage = {"input": response.usage.input_tokens, "output": response.usage.output_tokens}
         gen.update(
-            model=response.model,  # differs from `model` when a refusal fallback served the request
-            output=text,
-            usage_details=usage,
-            cost_details=estimate_cost(response.model, usage),
-            metadata={"stop_reason": response.stop_reason},
-            level="WARNING" if response.stop_reason in ("refusal", "max_tokens") else None,
+            model=result.model,
+            output=result.text,
+            usage_details=result.usage,
+            cost_details={"total": result.cost_usd} if result.cost_usd is not None else None,
+            # Billed to the Claude plan; the CLI's dollar figure is what the API would charge.
+            metadata={"cost_basis": "api_equivalent_estimate"},
         )
-
-    if response.stop_reason == "refusal":
-        raise LLMRefusalError(f"Model declined the request: {getattr(response, 'stop_details', None)}")
-    if response.stop_reason == "max_tokens":
-        logger.warning("Response hit max_tokens=%d and is truncated", max_tokens)
-
-    return text, response
+    return result
 
 
-def estimate_cost(model: str, usage: dict[str, int]) -> dict[str, float] | None:
-    """USD cost from list prices, so Langfuse shows cost even for models it doesn't price yet."""
-    prices = _PRICES_PER_MTOK.get(model)
-    if not prices:
-        return None
-    cost = {
-        "input": usage["input"] * prices[0] / 1_000_000,
-        "output": usage["output"] * prices[1] / 1_000_000,
-    }
-    cost["total"] = cost["input"] + cost["output"]
-    return cost
+def _run(argv: list[str], prompt: str, timeout: int) -> LLMResult:
+    try:
+        proc = subprocess.run(argv, input=prompt, capture_output=True, text=True,
+                              encoding="utf-8", timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise LLMError(f"claude -p timed out after {timeout}s") from e
+
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        detail = (proc.stderr or proc.stdout or "").strip()[:500]
+        raise LLMError(f"claude -p exited {proc.returncode} without JSON output: {detail}") from None
+
+    text = data.get("result") or ""
+    if data.get("is_error") or proc.returncode != 0:
+        if _USAGE_LIMIT_RE.search(text):
+            raise LLMUsageLimitError(text)
+        raise LLMError(text or f"claude -p exited {proc.returncode}")
+
+    usage = data.get("usage") or {}
+    served_by = next(iter(data.get("modelUsage") or {}), None)
+    return LLMResult(
+        text=text,
+        model=served_by or argv[argv.index("--model") + 1],
+        usage={
+            "input": sum(usage.get(k, 0) for k in
+                         ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")),
+            "output": usage.get("output_tokens", 0),
+        },
+        cost_usd=data.get("total_cost_usd"),
+    )
